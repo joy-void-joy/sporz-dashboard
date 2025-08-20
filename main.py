@@ -18,12 +18,15 @@ TECHNICIAN = typing.Literal["technician"]
 HACKER = typing.Literal["hacker"]
 SPY = typing.Literal["spy"]
 TRAITOR = typing.Literal["traitor"]
+ASTRONAUT = typing.Literal["astronaut"]
 
-hacker_roles = typing.Union[PSYCHOLOGIST, GENETICIST, TECHNICIAN]
+HACKER_ROLES = typing.Union[PSYCHOLOGIST, GENETICIST, TECHNICIAN]
+
+ROLES = typing.Union[MUTANT, DOCTOR, PSYCHOLOGIST, GENETICIST, TECHNICIAN, HACKER, SPY, TRAITOR, HACKER_ROLES]
 
 class Player(pydantic.BaseModel):
-    name: str
-    role: typing.Union[MUTANT, DOCTOR, PSYCHOLOGIST, GENETICIST, TECHNICIAN, HACKER, SPY, TRAITOR, None]
+    name: str | None = None
+    role: ROLES | None = None
     mutant: bool = False
     genome: typing.Literal["Resistant", "Normal", "Weak"] = "Normal"
     dead: bool = False
@@ -41,17 +44,47 @@ class Player(pydantic.BaseModel):
 class Game(pydantic.BaseModel):
     num_weak: int = 1
     num_resistant: int = 1
-    players: typing.Dict[str, Player]
+    roles: list[ROLES] = [MUTANT, DOCTOR, DOCTOR, PSYCHOLOGIST, GENETICIST, TECHNICIAN, HACKER, SPY, TRAITOR]
+    players: typing.Dict[str, Player | None]
 
 def player_who(pred):
     return next(i for i in players.values() if pred(i))
 
 def load():
     loaded = yaml.safe_load(open("players.yaml"))
-    loaded['players'] = {k: Player(name=k, role=v) for (k, v) in loaded['players'].items()}
-    game = Game(**loaded)
-    players = game.players
-    players["blank"] = Player(name="blank", role=None)
+    game = Game.model_validate(loaded)
+
+    assert len(game.roles) == len(game.players)
+    roles_to_add = [i for i in game.roles]
+
+    for i in game.players:
+        game.players[i] = game.players[i] or Player()
+
+    for i in game.players:
+        if game.players[i].role is not None:
+            roles_to_add.remove(game.players[i].role)
+
+
+    for i in game.players:
+        game.players[i] = game.players[i] or Player()
+        game.players[i].name = i
+
+        if game.players[i].role is None:
+            game.players[i].role = random.choice(roles_to_add)
+            roles_to_add.remove(game.players[i].role)
+
+            if game.players[i].role == "mutant":
+                game.players[i].mutant = True
+                game.players[i].genome = "Weak"
+    
+    def add_genome(genome: typing.Literal["Weak", "Resistant"]):
+        num_genome = sum(i.genome == genome for i in game.players.values() if not (genome == "Weak" and i.mutant))
+        for i in range(game.num_weak - num_genome):
+            tomodify = random.choice([i for i in game.players.values() if i.genome == "Normal" and i.role not in [None, "mutant", "doctor"]])
+            tomodify.genome = genome
+
+    add_genome("Weak")
+    add_genome("Resistant")
 
     return game
 
@@ -59,60 +92,54 @@ def load():
 game = load()
 players = game.players
 
-def modify():
-    player_who(lambda i: i.role == "mutant").mutant = True
-    player_who(lambda i: i.role == "mutant").genome = "Weak"
-
-    for i in range(game.num_weak):
-        tomodify = random.choice([i for i in players.values() if i.genome == "Normal" and i.role not in [None, "mutant", "doctor"]])
-        tomodify.genome = "Weak"
-
-    for i in range(game.num_resistant):
-        tomodify = random.choice([i for i in players.values() if i.genome == "Normal" and i.role not in [None, "mutant", "doctor"]])
-        tomodify.genome = "Resistant"
-
-modify()
-
 
 def get(prompt: str):
     return input(f"{prompt} ").lower()
 
-def get_player(prompt: str) -> Player:
+def gm(message: str = ""):
+    print(message)
+
+def get_player(prompt: str) -> Player | None:
     name = get(prompt)
 
-    if name == "":
-        return players["blank"]
+    if name == "" or name == "blank" or name == "blank":
+        return None
 
     try:
         return players[name]
     except KeyError:
         pass
 
+    player = None
     for i in players:
         if i.startswith(name):
-            return players[i]
+            if player is not None:
+                gm("Multiple players found")
+                return get_player(prompt)
 
-    print("Player not found")
+            player = players[i]
+
+    if player is not None:
+        return player
+
+    gm("Player not found")
     return get_player(prompt)
 
 
 def kill(player: Player):
     player.dead = True
-    gm(f"{player.name} was killed, they were {player.role}")
-
-def gm(message: str = ""):
-    print(message)
+    gm(f"{player.name} was killed, they were {player.role}, {player.genome}")
 
 def role(func=None, *, doctor=False, mutant=False):
     def wrapper(func):
         rolename = func.__name__
         if doctor:
-            doctors = [i for i in players.values() if i.role == "doctor" and i.dead == False and i.mutant == False and i.paralized == False]
+            doctors = [i for i in players.values() if i.role == "doctor" and not i.dead and not i.mutant and not i.paralized]
             doctor_string = " and ".join([i.name for i in doctors])
             gm()
             gm(f"[reverse underline]=== {rolename} ({doctor_string}) ===")
         elif mutant:
-            mutants = [i for i in players.values() if i.mutant and i.dead == False]
+            mutants = [i for i in players.values() if i.mutant and not i.dead]
             mutant_string = ", ".join([i.name for i in mutants])
             gm()
             gm(f"[reverse underline]=== {rolename} ({mutant_string}) ===")
@@ -179,7 +206,7 @@ def night():
             kill(get_player("Who to kill?"))
             return
         
-        num_doctors = len([i for i in players.values() if i.role == "doctor" and i.dead == False and i.mutant == False and i.paralized == False])
+        num_doctors = len([i for i in players.values() if i.role == "doctor" and not i.dead and not i.mutant and not i.paralized])
         for i in range(num_doctors):
             healed = get_player("Who to heal?")
             healed.spyed.healed = True
@@ -223,7 +250,7 @@ def night():
                 return next(i for i in [PSYCHOLOGIST, GENETICIST, TECHNICIAN] if typing.get_args(i)[0].startswith(role))
             except StopIteration:
                 return None
-        while not (role := check_role(get("Role to hack?"))):
+        while not (role := check_role(get("Role to hack (psy, gen, tech)?"))):
             pass
         gm(f"{hacker_info[role]}")
 
@@ -240,7 +267,9 @@ def day():
     if chief is None or chief.dead:
         chief = get_player("Who is the chief?")
 
-    kill(get_player("Who to vote against?"))
+    killed = get_player("Who to vote against?")
+    if killed is not None:
+        kill(killed)
 
 def show_roles():
     global chief
@@ -248,6 +277,8 @@ def show_roles():
     gm(tabulate([[j[1] for j in i] for i in players.values()], headers=Player.model_fields))
 
 for i in count():
+    yaml.dump(game.model_dump(), open("game.yaml", "w"))
+
     gm()
     gm()
     show_roles()
@@ -257,6 +288,8 @@ for i in count():
     gm(f"[bold]Night {i}")
     night()
 
+    yaml.dump(game.model_dump(), open("game.yaml", "w"))
+
     gm()
     gm()
     show_roles()
@@ -265,9 +298,15 @@ for i in count():
         p.paralized = False
         p.spyed = Player.Spyed()
 
+    yaml.dump(game.model_dump(), open("game.yaml", "w"))
+
 
     gm()
     gm()
     gm(f"[bold]Day {i}")
     day()
+
+    yaml.dump(game.model_dump(), open("game.yaml", "w"))
+
+
 
